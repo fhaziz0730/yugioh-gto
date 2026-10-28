@@ -16,18 +16,29 @@ def sanitize(obs):
     # deck=1, hand=2, monster=3, spell=4, grave=5, banished=6, extra=7.
     # Hide our draw order and all opponent private zones conservatively,
     # including temporarily revealed cards; retain only location/controller.
-    private = (cards[:, 2] == 1) | ((cards[:, 4] == 1) & np.isin(cards[:, 2], [2, 7]))
+    facedown = np.isin(cards[:, 5], [2, 6, 7])
+    opponent = cards[:, 4] == 1
+    hidden_targets = opponent & (np.isin(cards[:, 2], [1, 2]) |
+                                 ((cards[:, 2] == 7) & facedown) | facedown)
+    private = (cards[:, 2] == 1) | (opponent & (cards[:, 2] == 2)) | (opponent & (cards[:, 2] == 7) & facedown)
     locations, controllers = cards[private, 2].copy(), cards[private, 4].copy()
     cards[private] = 0
     cards[private, 2], cards[private, 4] = locations, controllers
-    facedown = (cards[:, 4] == 1) & np.isin(cards[:, 5], [2, 6, 7])
+    facedown = (cards[:, 4] == 1) & facedown
     cards[facedown, :2] = 0
     cards[facedown, 7:] = 0
+    if "actions_" in obs:
+        actions = obs["actions_"]
+        references = actions[:, 0].astype(np.int64) - 1
+        valid = (references >= 0) & (references < len(cards))
+        hidden = np.zeros(len(actions), dtype=bool)
+        hidden[valid] = hidden_targets[references[valid]]
+        actions[hidden, 1:3] = 0
     return obs
 
 
 class _NativeYgoEnvironment:
-    def __init__(self, root, deck, seed=0, max_options=256, max_steps=4000):
+    def __init__(self, root, deck, seed=0, max_options=256, max_steps=4000, audit_scenario=None):
         root = Path(root).resolve()
         self.root = root
         missing = set(deck.active) - supported_codes(root / "scripts/code_list.txt")
@@ -40,7 +51,7 @@ class _NativeYgoEnvironment:
             from ygoenv.ygopro import ygopro_ygoenv as native
         except ImportError as exc:
             raise RuntimeError("Native ygoenv is unavailable. See README Linux setup.") from exc
-        if getattr(native, "integration_revision", None) != 1:
+        if getattr(native, "integration_revision", None) != 2:
             raise RuntimeError("Outdated native binary: rebuild the source integration Docker image")
         self.native = native
         work = root / "scripts"
@@ -54,6 +65,9 @@ class _NativeYgoEnvironment:
         deck.write_active(active)
         init_module(str(root / "assets/locale/en/cards.cdb"),
                     str(work / "code_list.txt"), {"Mirror": str(active)})
+        self.audit_enabled = audit_scenario is not None
+        if self.audit_enabled:
+            native.set_audit_scenario(audit_scenario)
         self.env = ygoenv.make("YGOPro-v1", env_type="gymnasium", num_envs=1,
                               num_threads=1, seed=seed, deck1="Mirror",
                               deck2="Mirror", play_mode="self", player=0,
@@ -63,8 +77,11 @@ class _NativeYgoEnvironment:
         self.max_options = max_options
         self.max_steps = max_steps
         self.steps = 0
+        self.seed = seed
+        self.require_reset = False
 
     def unpack(self, obs, info):
+        self.last_raw = {k: v[0].copy() for k, v in obs.items()} if self.audit_enabled else None
         self.check_errors(info)
         count = int(info["num_options"][0])
         if bool(info.get("action_overflow", [False])[0]):
@@ -73,6 +90,11 @@ class _NativeYgoEnvironment:
             raise RuntimeError("Engine returned no legal action")
         return sanitize({k: v[0] for k, v in obs.items()}), int(info["to_play"][0]), count
 
+    def audit_snapshot(self):
+        if not self.audit_enabled:
+            raise RuntimeError("Privileged inspection is disabled outside audit scenarios")
+        return {"state": self.native.audit_snapshot(), "raw": self.last_raw}
+
     def check_errors(self, info):
         errors = self.native.integration_errors()
         if errors or bool(info.get("integration_error", [False])[0]):
@@ -80,11 +102,14 @@ class _NativeYgoEnvironment:
 
     def reset(self):
         self.steps = 0
+        self.require_reset = False
         self.native.clear_prompt_counts()
         obs, info = self.env.reset()
         return self.unpack(obs, info)
 
     def step(self, action):
+        if self.require_reset:
+            raise RuntimeError("Reset before stepping a restored environment; mid-game resume is unsupported")
         started = time.monotonic()
         obs, reward, terminated, truncated, info = self.env.step(np.array([action], dtype=np.int32))
         self.check_errors(info)
@@ -99,6 +124,28 @@ class _NativeYgoEnvironment:
                     "engine_diagnostics": {"script_errors": len(self.native.integration_errors()),
                                            "prompt_counts": self.native.prompt_counts()}}
         return self.unpack(obs, info), float(reward[0]), False, {}
+
+    def state_dict(self):
+        """State of the next reset only; never serialize hidden boards to policy."""
+        self.check_errors({})
+        if getattr(self.native, "resume_rng_version", None) != 1:
+            raise RuntimeError("Rebuild the source engine for checkpoint RNG support")
+        if self.audit_enabled:
+            raise RuntimeError("Audit fixtures cannot produce production resume checkpoints")
+        return {"version": 1, "scope": "next_reset_rng", "seed": self.seed,
+                "max_options": self.max_options, "max_steps": self.max_steps,
+                "native_rng": self.native.export_resume_rng()}
+
+    def load_state_dict(self, state):
+        expected = {"version": 1, "scope": "next_reset_rng", "seed": self.seed,
+                    "max_options": self.max_options, "max_steps": self.max_steps}
+        for key, value in expected.items():
+            if state.get(key) != value:
+                raise ValueError(f"Environment checkpoint mismatch: {key}")
+        if self.audit_enabled:
+            raise RuntimeError("Audit fixtures cannot restore production checkpoints")
+        self.native.import_resume_rng(state["native_rng"])
+        self.require_reset = True
 
     def close(self):
         close = getattr(self.env, "close", None)
@@ -121,6 +168,12 @@ def _engine_worker(connection, options):
                 result = env.reset()
             elif command == "step":
                 result = env.step(value)
+            elif command == "audit":
+                result = env.audit_snapshot()
+            elif command == "state_dict":
+                result = env.state_dict()
+            elif command == "load_state_dict":
+                result = env.load_state_dict(value)
             else:
                 raise RuntimeError(f"Unknown engine command: {command}")
             connection.send((True, result))
@@ -137,7 +190,7 @@ def _engine_worker(connection, options):
 
 class YgoEnvironment:
     """Isolate native crashes and global engine state from the learner process."""
-    def __init__(self, root, deck, seed=0, max_options=256, max_steps=4000, worker_timeout=180):
+    def __init__(self, root, deck, seed=0, max_options=256, max_steps=4000, worker_timeout=180, _audit_scenario=None):
         root = Path(root).resolve()
         missing = set(deck.active) - supported_codes(root / "scripts/code_list.txt")
         if missing:
@@ -146,7 +199,8 @@ class YgoEnvironment:
         context = multiprocessing.get_context("spawn")
         self.connection, child = context.Pipe()
         self.process = context.Process(target=_engine_worker, args=(child, dict(
-            root=str(root), deck=deck, seed=seed, max_options=max_options, max_steps=max_steps)), daemon=True)
+            root=str(root), deck=deck, seed=seed, max_options=max_options, max_steps=max_steps,
+            audit_scenario=_audit_scenario)), daemon=True)
         self.process.start()
         child.close()
         try:
@@ -180,6 +234,12 @@ class YgoEnvironment:
 
     def step(self, action):
         return self._request("step", action)
+
+    def state_dict(self):
+        return self._request("state_dict")
+
+    def load_state_dict(self, state):
+        return self._request("load_state_dict", state)
 
     def close(self):
         if self.process.is_alive():

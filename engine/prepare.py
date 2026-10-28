@@ -190,14 +190,18 @@ source = source[:start] + '''    } else if (msg_ == MSG_ANNOUNCE_ATTRIB || msg_ 
         YGO_SetResponsei(pduel_, legal_actions_[index].response_);
       };
 ''' + source[end:]
-if header.read_text() != source:
-    header.write_text(source)
 binding = env / "ygoenv/ygoenv/ygopro/ygopro.cpp"
 text = subprocess.check_output(["git", "-C", str(env), "show", "HEAD:ygoenv/ygoenv/ygopro/ygopro.cpp"], text=True).replace('  m.def("init_module", &ygopro::init_module);', '''  m.def("init_module", &ygopro::init_module);
   m.def("integration_errors", []() { return ygopro::integration_errors; });
   m.def("prompt_counts", []() { return ygopro::integration_prompt_counts; });
   m.def("clear_prompt_counts", []() { ygopro::integration_prompt_counts.clear(); });
   m.attr("integration_revision") = 1;''')
+from audit_patch import apply as apply_audit_patch
+source, text = apply_audit_patch(source, text)
+from resume_patch import apply as apply_resume_patch
+source, text = apply_resume_patch(source, text)
+if header.read_text() != source:
+    header.write_text(source)
 if binding.read_text() != text:
     binding.write_text(text)
 interpreter = core / "interpreter.h"
@@ -225,7 +229,7 @@ if len(codes) > 65534:
     raise RuntimeError("Card vocabulary exceeds native 16-bit representation")
 (work / "code_list.txt").write_text("".join(f"{code} {int((scripts / f'c{code}.lua').exists())}\n" for code in codes))
 manifest = json.loads((root / "engine/lock.json").read_text())
-manifest.update(integration_revision=1, card_count=len(codes),
+manifest.update(integration_revision=2, resume_rng_version=1, card_count=len(codes),
                 database_sha256=hashlib.sha256(database.read_bytes()).hexdigest())
 (env / "integration.json").write_text(json.dumps(manifest, indent=2))
 print(f"Prepared source integration: {len(codes)} card definitions")

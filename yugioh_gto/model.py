@@ -36,6 +36,8 @@ class Policy(nn.Module):
 def pack(observation):
     """Engine adapter must sanitize private information before calling this."""
     keys = ("cards_", "global_", "h_actions_")
+    if "reveals_" in observation:
+        keys += ("reveals_",)
     features = np.concatenate([observation[k].reshape(-1) for k in keys]).astype(np.float32) / 255
     actions = observation["actions_"].astype(np.float32) / 255
     return features, actions

@@ -7,6 +7,16 @@ single games, without siding. This is a research learner, not a proven GTO solve
 
 ## Working engine integration
 
+The latest [ruling and visibility audit](RULES_AUDIT.md) adds 15 deterministic
+real-core scenarios and fixes hidden target history, unrelated-card reveal
+leaks, face-up Extra Deck visibility, and search-choice IDs. Integration revision
+2 includes a reveal-history observation channel. Older checkpoints are retained
+for reference but are incompatible; use a fresh run with the current image.
+
+[Checkpoint resume](RESUME.md) now restores the full training and native RNG
+state. `latest.pt` is saved after every completed update; exact CPU continuation
+was verified against an uninterrupted Elfnote run.
+
 The native adapter and YGOPro core are compiled together from pinned source.
 Matching current card scripts and database provide 15,019 card definitions,
 including every active card in both submitted decks. There is no dependency
@@ -17,7 +27,7 @@ Elfnote passes preflight. Kewl Tune's engine card coverage also passes, but its
 three Kewl Tune Rotary copies fail the selected TCG banlist. No deck cards were
 silently removed or replaced. Side cards are excluded from these single games.
 
-Final engine validation completed 8 Elfnote training games and 32 balanced
+Earlier revision-1 engine validation completed 8 Elfnote training games and 32 balanced
 evaluation games, with no truncations or Lua errors. A separate historical
 regression completed 8 games and exercised 27 card declarations, covering the
 prompt that previously crashed the released binary. See `VERIFICATION.md`.
@@ -35,9 +45,9 @@ docker run --rm --mount "type=bind,source=${PWD}/runs,target=/app/runs" yugioh-g
 
 Create the host `runs` directory first if it does not exist. Use a fresh output
 directory for each CLI run. The generated files appear in your host `runs/`.
-The model trained during verification is at
-`runs/elfnote-engine-v1/checkpoint-000002.pt`, with evaluation results at
-`runs/elfnote-engine-v1-eval/summary.json`.
+The latest compatible resumable smoke-run model is at
+`runs/elfnote-resumed-cli/latest.pt` (iteration 2). Earlier audit checkpoints
+are preserved as historical artifacts.
 
 The default image uses CPU PyTorch. For GPU training, build with a compatible
 CUDA wheel index using `--build-arg TORCH_INDEX_URL=...`, and run with `--gpus all`.
@@ -72,12 +82,21 @@ python -m yugioh_gto.cli evaluate --candidate runs/elfnote-001/checkpoint-000100
 tensorboard --logdir runs/elfnote-001/tensorboard
 ```
 
+Continue into a fresh directory, restoring the saved configuration:
+
+```bash
+python -m yugioh_gto.cli train --resume runs/elfnote-001/latest.pt --iterations 200 --output runs/elfnote-continued
+```
+
+The target includes saved iterations. See [resume behavior and verification](RESUME.md).
+
 | Output | Contents |
 | --- | --- |
 | `manifest.json` | Configuration, seed, device, source revisions and asset/binary hashes |
 | `metrics.jsonl` | Games, PPO updates, resource/action diagnostics and native prompt/error counts |
 | `results.sqlite3`, `games.csv` | Match records and export |
-| `checkpoint-*.pt` | Model, architecture, optimizer and experiment metadata |
+| `latest.pt` | Atomic recovery checkpoint after every completed update |
+| `checkpoint-*.pt` | Archives with model, optimizer, opponent pool, RNG and experiment state |
 | `tensorboard/` | Training metrics |
 | `summary.json` | Evaluation outcomes and Wilson 95% intervals by turn order |
 
@@ -102,9 +121,10 @@ per-player damage/disruption attribution still needs further instrumentation.
 - Updated chain/reveal protocols are parsed correctly. Monster-type and
   multi-attribute declarations, optional card selections, cancellation,
   unselecting cards, End Phase choices and end-phase discards are exposed.
-- Visible card IDs are populated. Both draw orders and opponent private/facedown
-  features are filtered before policy input. This conservative filter also
-  discards some legitimately revealed knowledge.
+- Visible card IDs and deck search labels are populated correctly. Both draw
+  orders and opponent private/facedown features are filtered before policy input.
+  Confirmed-card events are remembered separately, without exposing hand slots
+  or unrelated cards. Some other reveal mechanisms remain conservatively hidden.
 - Legal choices are masked before sampling. Native overflow is reported
   explicitly, so oversized action lists fail rather than silently dropping
   choices. Very large combination spaces or other unsupported upstream prompt
@@ -122,11 +142,13 @@ strength. Broader scenario tests and ruling audits remain research work.
 
 ```powershell
 .venv/Scripts/python.exe -m unittest discover -s tests -v
+docker run --rm --entrypoint python --mount "type=bind,source=${PWD}/runs,target=/app/runs" yugioh-gto:source scripts/run-audit.py
 docker run --rm --entrypoint python --mount "type=bind,source=${PWD}/runs,target=/app/runs" yugioh-gto:source scripts/engine-integration.py --output runs/integration-new
 docker run --rm --entrypoint python --mount "type=bind,source=${PWD}/runs,target=/app/runs" yugioh-gto:source scripts/engine-regression.py
 ```
 
-Unit tests use an explicitly synthetic fixture. The integration command uses
+The default Windows run skips native scenarios; the Docker audit command runs
+all 15 and saves a report. Pipeline unit tests use a synthetic fixture. The integration command uses
 the unchanged, eligibility-checked Elfnote deck. The regression command uses
 upstream's historical Blue-Eyes list, including Crossout Designator, solely to
 test engine prompts; its results are labeled historical engine regression and

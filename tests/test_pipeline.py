@@ -35,6 +35,13 @@ class FixtureEnvironment:
             return None, -1., True, {"truncated": False, "win_reason": 1}
         return self.observation(), 0., False, {}
 
+    def state_dict(self):
+        return {"version": 1, "kind": "stateless-test-fixture"}
+
+    def load_state_dict(self, state):
+        if state != self.state_dict():
+            raise ValueError("Fixture state mismatch")
+
 
 class PipelineTests(unittest.TestCase):
     def test_script_errors_are_not_game_outcomes(self):
@@ -53,6 +60,7 @@ class PipelineTests(unittest.TestCase):
         env = object.__new__(_NativeYgoEnvironment)
         env.native = SimpleNamespace(integration_errors=lambda: [])
         env.max_options = 256
+        env.audit_enabled = False
         obs = {"cards_": np.zeros((1, 3, 41), dtype=np.uint8)}
         _, seat, count = env.unpack(obs, {"num_options": [256], "to_play": [0], "action_overflow": [0]})
         self.assertEqual((seat, count), (0, 256))
@@ -95,6 +103,7 @@ class PipelineTests(unittest.TestCase):
         cards = np.ones((6, 41), np.uint8) * 99
         cards[:, 2] = [1, 1, 2, 2, 7, 3]
         cards[:, 4] = [0, 1, 0, 1, 1, 1]
+        cards[4, 5] = 7
         cards[5, 5] = 6
         original = cards.copy()
         result = sanitize({"cards_": cards})["cards_"]

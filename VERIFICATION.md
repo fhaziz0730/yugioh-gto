@@ -1,5 +1,20 @@
 # Engine integration verification — October 28, 2026
 
+Checkpoint continuation now passes seven additional resume tests and a real
+Elfnote interrupted/uninterrupted CPU comparison. Model/optimizer tensors,
+opponent pools, all saved RNG state, native shuffle state and non-timing game
+logs matched exactly. See `RESUME.md` and
+`runs/resume-verification-final/report.json`. The current resumable example is
+`runs/elfnote-resumed-cli/latest.pt` at iteration 2; legacy checkpoints do not
+contain the full recovery state.
+
+The latest ruling/visibility work is documented in `RULES_AUDIT.md` and
+`runs/rules-audit/report.json`: 15 real-core scenarios passed, along with the
+15 pipeline tests. The integration is now revision 2, with corrected search
+choice IDs, privacy fixes and a reveal-history input. Historical revision-1
+checkpoints/results below are preserved; use the new
+`runs/elfnote-audit-v2/checkpoint-000001.pt` for the current schema.
+
 ## Fixed integration
 
 The previous released binary and 2024 assets have been replaced by a source

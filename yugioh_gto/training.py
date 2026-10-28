@@ -13,6 +13,7 @@ import numpy as np
 import torch
 
 from .model import Policy, pack
+from .checkpoint import read_resume, validate_resume, restore_rng, save_training, archive_latest
 
 
 @dataclass
@@ -169,15 +170,6 @@ def ppo_update(policy, optimizer, episodes, settings):
             "approx_kl": float(np.mean(kls)) if kls else 0., "training_sequences": len(episodes)}
 
 
-def save_checkpoint(path, policy, optimizer, iteration, metadata, settings):
-    path = Path(path)
-    temporary = path.with_suffix(".tmp")
-    torch.save(dict(model=policy.state_dict(), spec=policy.spec,
-                    optimizer=optimizer.state_dict(), iteration=iteration,
-                    settings=asdict(settings), metadata=metadata), temporary)
-    temporary.replace(path)
-
-
 def load_policy(path, device="cpu"):
     checkpoint = torch.load(path, map_location=device, weights_only=True)
     policy = Policy(**checkpoint["spec"]).to(device)
@@ -186,8 +178,18 @@ def load_policy(path, device="cpu"):
     return policy, checkpoint
 
 
-def train(env, output, settings, metadata, device="cpu"):
-    seed_everything(settings.seed)
+def train(env, output, settings, metadata, device="cpu", resume=None):
+    if settings.iterations < 1 or settings.games_per_iteration < 2 or settings.games_per_iteration % 2:
+        raise ValueError("Use positive iterations and an even games_per_iteration >= 2")
+    if settings.save_every < 1 or settings.pool_size < 1 or settings.ppo_epochs < 1:
+        raise ValueError("save_every, pool_size and ppo_epochs must be positive")
+    output = Path(output).resolve()
+    if output.exists() and any(output.iterdir()):
+        raise ValueError("Output directory is not empty; choose a fresh continuation directory")
+    checkpoint = read_resume(resume) if resume else None
+    identity = copy.deepcopy(metadata)
+    if checkpoint:
+        validate_resume(checkpoint, settings, identity, device)
     rng = np.random.default_rng(settings.seed)
     results = Results(output)
     from torch.utils.tensorboard import SummaryWriter
@@ -195,13 +197,36 @@ def train(env, output, settings, metadata, device="cpu"):
     try:
         observation, _, _ = env.reset()
         features, actions = pack(observation)
+        seed_everything(settings.seed)
         policy = Policy(len(features), actions.shape[-1], settings.hidden).to(device)
         optimizer = torch.optim.Adam(policy.parameters(), lr=settings.learning_rate)
         opponent_pool = [("initial", copy.deepcopy(policy).eval())]
+        start_iteration = 0
+        if checkpoint:
+            if policy.spec != checkpoint["spec"]:
+                raise ValueError("Checkpoint observation/model architecture mismatch")
+            policy.load_state_dict(checkpoint["model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            opponent_pool = []
+            for entry in checkpoint["resume"]["opponent_pool"]:
+                opponent = Policy(**checkpoint["spec"]).to(device)
+                opponent.load_state_dict(entry["model"])
+                opponent_pool.append((entry["name"], opponent.eval()))
+            env.load_state_dict(checkpoint["resume"]["environment"])
+            start_iteration = checkpoint["iteration"]
+            restore_rng(checkpoint["resume"]["rng"], rng)
         metadata = {**metadata, "settings": asdict(settings), "device": device,
                     "observation_size": len(features), "action_size": actions.shape[-1]}
+        if checkpoint:
+            metadata["resumed_from"] = {"checkpoint": str(Path(resume).resolve()),
+                                        "sha256": digest(resume), "iteration": start_iteration}
         (results.path / "manifest.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-        for iteration in range(1, settings.iterations + 1):
+        if checkpoint:
+            results.log({"event": "resume", **metadata["resumed_from"]})
+        latest = results.path / "latest.pt"
+        save_training(latest, policy, optimizer, start_iteration, metadata, settings,
+                      rng=rng, env=env, pool=opponent_pool, identity=identity, device=device)
+        for iteration in range(start_iteration + 1, settings.iterations + 1):
             episodes, wins, completed, truncated = [], 0, 0, 0
             for game in range(settings.games_per_iteration):
                 seat = game % 2
@@ -227,11 +252,14 @@ def train(env, output, settings, metadata, device="cpu"):
             print(json.dumps(metrics), flush=True)
             if not completed:
                 raise RuntimeError("No completed games in rollout; refusing to train on artificial outcomes")
-            if iteration % settings.save_every == 0 or iteration == settings.iterations:
+            if iteration % settings.save_every == 0:
                 name = f"checkpoint-{iteration:06d}"
-                save_checkpoint(results.path / f"{name}.pt", policy, optimizer, iteration, metadata, settings)
                 opponent_pool.append((name, copy.deepcopy(policy).eval()))
                 opponent_pool = opponent_pool[-settings.pool_size:]
+            save_training(latest, policy, optimizer, iteration, metadata, settings,
+                          rng=rng, env=env, pool=opponent_pool, identity=identity, device=device)
+            if iteration % settings.save_every == 0 or iteration == settings.iterations:
+                archive_latest(latest, results.path / f"checkpoint-{iteration:06d}.pt")
         return policy
     finally:
         writer.close()

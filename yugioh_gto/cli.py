@@ -35,6 +35,8 @@ def preflight(args):
         errors.append("Linux ygoenv native binary missing; see README setup")
     if not (engine / "integration.json").exists():
         errors.append("Source integration manifest missing; rebuild the source engine")
+    elif json.loads((engine / "integration.json").read_text()).get("integration_revision") != 2:
+        errors.append("Outdated source integration; rebuild for visibility audit revision 2")
     if not (engine / "scripts/script/utility.lua").exists():
         errors.append("Card scripts missing")
     if not (engine / "assets/locale/en/cards.cdb").exists():
@@ -63,11 +65,14 @@ def main():
         if name != "preflight":
             command.add_argument("--output", default=str(ROOT / f"runs/{name}"))
             command.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
-            command.add_argument("--seed", type=int, default=7)
-            command.add_argument("--max-decisions", type=int, default=4000)
+            command.add_argument("--seed", type=int, default=None if name == "train" else 7)
+            command.add_argument("--max-decisions", type=int, default=None if name == "train" else 4000)
         if name == "train":
-            command.add_argument("--iterations", type=int, default=100)
-            command.add_argument("--games-per-iteration", type=int, default=8)
+            command.add_argument("--iterations", type=int, help="Total target iteration, including saved updates")
+            command.add_argument("--games-per-iteration", type=int)
+            command.add_argument("--save-every", type=int, help="Archive/opponent-promotion interval; latest.pt saves every update")
+            command.add_argument("--resume", help="Complete training checkpoint; continue into a fresh output directory")
+            command.add_argument("--torch-threads", type=int, help="CPU thread count; restored from checkpoint on resume")
         if name == "evaluate":
             command.add_argument("--candidate", required=True)
             command.add_argument("--opponent", help="Checkpoint; omit for random legal policy")
@@ -88,7 +93,26 @@ def main():
         import torch
         from .engine import YgoEnvironment
         from .training import Settings, train, evaluate, load_policy, digest, digest_scripts
-        device = "cuda" if args.device == "auto" and torch.cuda.is_available() else "cpu" if args.device == "auto" else args.device
+        from .checkpoint import read_resume, validate_resume
+        saved = read_resume(args.resume) if args.command == "train" and args.resume else None
+        if args.command == "train":
+            threads = args.torch_threads if args.torch_threads is not None else saved["resume"]["runtime"]["threads"] if saved else None
+            if threads is not None:
+                if threads < 1:
+                    raise ValueError("--torch-threads must be positive")
+                torch.set_num_threads(threads)
+            if saved and torch.get_num_interop_threads() != saved["resume"]["runtime"]["interop_threads"]:
+                torch.set_num_interop_threads(saved["resume"]["runtime"]["interop_threads"])
+        if args.command == "train":
+            settings = Settings(**saved["settings"]) if saved else Settings()
+            for key in ("iterations", "games_per_iteration", "seed", "max_decisions", "save_every"):
+                if getattr(args, key) is not None:
+                    setattr(settings, key, getattr(args, key))
+            args.seed, args.max_decisions = settings.seed, settings.max_decisions
+        if args.device == "auto" and saved:
+            device = saved["resume"]["runtime"]["device"]
+        else:
+            device = "cuda" if args.device == "auto" and torch.cuda.is_available() else "cpu" if args.device == "auto" else args.device
         output = Path(args.output).resolve()
         if output.exists() and any(output.iterdir()):
             raise ValueError("Output directory is not empty; choose a new run directory")
@@ -101,14 +125,12 @@ def main():
                     "native_binary_sha256": digest(Path(args.engine) / "ygoenv/ygoenv/ygopro/ygopro_ygoenv.so"),
                     "engine_bundle": json.loads((Path(args.engine) / "integration.json").read_text()),
                     "backend": "ygoenv", "torch_version": str(torch.__version__)}
-        if args.command == "train" and (args.iterations < 1 or args.games_per_iteration < 2 or args.games_per_iteration % 2):
-            raise ValueError("Use positive iterations and an even games-per-iteration >= 2")
+        if saved:
+            validate_resume(saved, settings, metadata, device)
         env = YgoEnvironment(args.engine, deck, args.seed, max_steps=args.max_decisions)
         try:
             if args.command == "train":
-                settings = Settings(iterations=args.iterations, games_per_iteration=args.games_per_iteration,
-                                    seed=args.seed, max_decisions=args.max_decisions)
-                train(env, output, settings, metadata, device)
+                train(env, output, settings, metadata, device, resume=args.resume)
             else:
                 candidate, checkpoint = load_policy(args.candidate, device)
                 opponent = load_policy(args.opponent, device)[0] if args.opponent else None
