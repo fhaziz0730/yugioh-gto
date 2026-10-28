@@ -1,0 +1,107 @@
+{
+  "main": 42,
+  "extra": 15,
+  "side_ignored": 15,
+  "as_of": "2026-10-28",
+  "ready": false,
+  "errors": [
+    "Card scripts missing",
+    "Engine card database missing",
+    "Engine supported-card list missing 23 active card passwords: [4063756, 4891376, 5559570, 10266279, 12375297, 13597785, 17473466, 24092792, 25661743, 27184601, 31822037, 36270527, 36709484, 37279096, 42302563, 48739627, 56651978, 62368221, 70488851, 85976588, 90875418, 97556336, 99753860]",
+    "Linux ygoenv native binary missing; see README setup"
+  ],
+  "unsupported_cards": [
+    {
+      "password": 4063756,
+      "name": "Mediclius the Extraordinary Power Patron"
+    },
+    {
+      "password": 4891376,
+      "name": "Zalen the Shackled Dragon"
+    },
+    {
+      "password": 5559570,
+      "name": "Elfnote June Pride"
+    },
+    {
+      "password": 10266279,
+      "name": "Junoldo the Shadespirit Power Patron"
+    },
+    {
+      "password": 12375297,
+      "name": "Elfnote Power Patron"
+    },
+    {
+      "password": 13597785,
+      "name": "Elfnote Lucina"
+    },
+    {
+      "password": 17473466,
+      "name": "Nervedo the Shadebeast Power Patron"
+    },
+    {
+      "password": 24092792,
+      "name": "Elfnotes: Rhapsodia of Madness"
+    },
+    {
+      "password": 25661743,
+      "name": "Prohibited Power Patron Portal - Terminus"
+    },
+    {
+      "password": 27184601,
+      "name": "Artmage Diactorus"
+    },
+    {
+      "password": 31822037,
+      "name": "Purification Power Patron"
+    },
+    {
+      "password": 36270527,
+      "name": "Ars Magna the Finite and the Infinite"
+    },
+    {
+      "password": 36709484,
+      "name": "Theorealize Past Lull"
+    },
+    {
+      "password": 37279096,
+      "name": "Ars Magna \"Citrinitas\""
+    },
+    {
+      "password": 42302563,
+      "name": "Elfnote Seraphim Strelitzia"
+    },
+    {
+      "password": 48739627,
+      "name": "Theorealize"
+    },
+    {
+      "password": 56651978,
+      "name": "Elfnote Regina"
+    },
+    {
+      "password": 62368221,
+      "name": "Ars Magna the Corruption and the Purification"
+    },
+    {
+      "password": 70488851,
+      "name": "Vidolium the Unstable Power Patron of Unity"
+    },
+    {
+      "password": 85976588,
+      "name": "Elfnote Fortuna"
+    },
+    {
+      "password": 90875418,
+      "name": "Theorealized Medius"
+    },
+    {
+      "password": 97556336,
+      "name": "Medius the Pure"
+    },
+    {
+      "password": 99753860,
+      "name": "Ars Magna the Division and the Union"
+    }
+  ]
+}

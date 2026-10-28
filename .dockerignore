@@ -1,0 +1,8 @@
+.git
+.venv
+.venv-linux
+vendor
+runs
+__pycache__
+**/__pycache__
+build

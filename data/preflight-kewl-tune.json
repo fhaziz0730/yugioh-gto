@@ -1,0 +1,12 @@
+{
+  "main": 40,
+  "extra": 15,
+  "side_ignored": 15,
+  "as_of": "2026-10-28",
+  "ready": false,
+  "errors": [
+    "Kewl Tune Rotary: 3 copies; TCG limit is 0"
+  ],
+  "unsupported_cards": [],
+  "backend": "source-built Docker engine"
+}
